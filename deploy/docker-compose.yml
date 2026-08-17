@@ -139,7 +139,7 @@ services:
       LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
 
   langfuse-web:
-    image: modelbest-registry.cn-beijing.cr.aliyuncs.com/public/guide-robot/langfuse-web:lt-dev-20260814.171009
+    image: modelbest-registry.cn-beijing.cr.aliyuncs.com/public/guide-robot/langfuse-web:lt-dev-20260817.140111
     restart: unless-stopped
     depends_on: *langfuse-depends-on
     ports:
