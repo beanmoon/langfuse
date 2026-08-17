@@ -10,7 +10,7 @@
 #
 # Ports exposed externally: only ${LANGFUSE_PORT} (default 3100, to avoid clashing
 # with the IDE on 3000). postgres / clickhouse / redis / minio stay on the docker
-# network.
+# network. Persistent data is bind-mounted to /data/langfuse/{postgres,clickhouse,redis,minio}.
 #
 # Env var names mirror the official langfuse/docker-compose.yml so the S3/Redis
 # ingestion queue initializes correctly against MinIO.
@@ -25,7 +25,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-langfuse}
       POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
-      - pg-data:/var/lib/postgresql/data
+      - /data/langfuse/postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-langfuse}"]
       interval: 5s
@@ -33,14 +33,14 @@ services:
       retries: 10
 
   clickhouse:
-    image: clickhouse/clickhouse-server:24.3
+    image: clickhouse/clickhouse-server:25.12
     restart: unless-stopped
     environment:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     volumes:
-      - ch-data:/var/lib/clickhouse
+      - /data/langfuse/clickhouse:/var/lib/clickhouse
     ulimits:
       nofile:
         soft: 262144
@@ -54,11 +54,11 @@ services:
   redis:
     image: redis:7
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "myredissecret"]
     volumes:
-      - redis-data:/data
+      - /data/langfuse/redis:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "myredissecret", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -71,7 +71,7 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio12345}
     command: ["server", "/data", "--console-address", ":9001"]
     volumes:
-      - minio-data:/data
+      - /data/langfuse/minio:/data
     healthcheck:
       test: ["CMD-SHELL", "mc ready local || exit 1"]
       interval: 5s
@@ -99,7 +99,7 @@ services:
   # drains the queue into ClickHouse. Without the worker, spans land in S3 but
   # the UI shows zero traces. The env anchor keeps web/worker in sync.
   langfuse-worker:
-    image: langfuse/langfuse-worker:3
+    image: langfuse/langfuse-worker:latest
     restart: unless-stopped
     depends_on: &langfuse-depends-on
       postgres:
@@ -120,9 +120,10 @@ services:
       CLICKHOUSE_CLUSTER_ENABLED: "false"
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
-      REDIS_URL: redis://redis:6379
+      REDIS_URL: redis://:myredissecret@redis:6379
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_AUTH: myredissecret
       LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${LANGFUSE_S3_BUCKET:-langfuse}
       LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
       LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
@@ -139,7 +140,7 @@ services:
       LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
 
   langfuse-web:
-    image: modelbest-registry.cn-beijing.cr.aliyuncs.com/public/guide-robot/langfuse-web:lt-dev-20260814.171009
+    image: modelbest-registry.cn-beijing.cr.aliyuncs.com/public/guide-robot/langfuse-web:lt-dev-20260817.140111
     restart: unless-stopped
     depends_on: *langfuse-depends-on
     ports:
@@ -156,9 +157,3 @@ services:
       LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-}
       LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-}
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-}
-
-volumes:
-  pg-data:
-  ch-data:
-  redis-data:
-  minio-data:
