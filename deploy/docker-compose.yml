@@ -9,9 +9,10 @@
 #   open http://localhost:${LANGFUSE_PORT:-3100}  -> sign up / use bootstrapped project keys
 #
 # Ports exposed externally:
-# - ${LANGFUSE_PORT} (default 3100) for Langfuse Web / API
+# - ${LANGFUSE_PORT} (default 3100) for Langfuse Web / API (via langfuse-edge)
 # - ${MINIO_API_PORT} (default 9000, MinIO's native API port) so robots and
 #   browsers can reach the hosts in media presigned URLs.
+# langfuse-edge rewrites CSP so http MinIO on the public host can play inline.
 # postgres / clickhouse / redis stay on the docker network.
 # Persistent data is bind-mounted to /data/langfuse/{postgres,clickhouse,redis,minio}.
 #
@@ -151,8 +152,8 @@ services:
     image: modelbest-registry.cn-beijing.cr.aliyuncs.com/public/guide-robot/langfuse-web:lt-dev-20260817.140111
     restart: unless-stopped
     depends_on: *langfuse-depends-on
-    ports:
-      - "${LANGFUSE_PORT:-3100}:3000"
+    expose:
+      - "3000"
     environment:
       <<: *langfuse-env
       # Presigned media URLs are returned to robots/browsers, so Web must sign
@@ -168,3 +169,18 @@ services:
       LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-}
       LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-}
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-}
+
+  # Stock nginx:alpine. Does not change the Langfuse image; only hides the
+  # baked CSP and re-adds it with ${LANGFUSE_S3_MEDIA_UPLOAD_PUBLIC_ENDPOINT}
+  # on media-src / img-src / connect-src.
+  langfuse-edge:
+    image: nginx:alpine
+    restart: unless-stopped
+    depends_on:
+      - langfuse-web
+    ports:
+      - "${LANGFUSE_PORT:-3100}:80"
+    environment:
+      MEDIA_CSP_ORIGIN: ${LANGFUSE_S3_MEDIA_UPLOAD_PUBLIC_ENDPOINT:?set LANGFUSE_S3_MEDIA_UPLOAD_PUBLIC_ENDPOINT in .env}
+    volumes:
+      - ./nginx-csp.conf.template:/etc/nginx/templates/default.conf.template:ro
