@@ -9,11 +9,10 @@
 #   open http://localhost:${LANGFUSE_PORT:-3100}  -> sign up / use bootstrapped project keys
 #
 # Ports exposed externally:
-# - ${LANGFUSE_PORT} (default 3100) for Langfuse Web / API (via langfuse-edge)
-# - ${MINIO_API_PORT} (default 9000, MinIO's native API port) so robots and
-#   browsers can reach the hosts in media presigned URLs.
-# langfuse-edge rewrites CSP so http MinIO on the public host can play inline.
-# postgres / clickhouse / redis stay on the docker network.
+# - ${LANGFUSE_PORT} (default 3100) for Langfuse Web / API and the MinIO S3
+#   API (proxied same-origin under /${LANGFUSE_S3_BUCKET}/ by langfuse-edge so
+#   presigned media URLs match the UI origin and the baked CSP's 'self').
+# postgres / clickhouse / redis / minio stay on the docker network.
 # Persistent data is bind-mounted to /data/langfuse/{postgres,clickhouse,redis,minio}.
 #
 # Env var names mirror the official langfuse/docker-compose.yml so the S3/Redis
@@ -73,10 +72,9 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio12345}
-      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_API_CORS_ALLOW_ORIGIN:-*}
     command: ["server", "/data", "--console-address", ":9001"]
-    ports:
-      - "${MINIO_API_PORT:-9000}:9000"
+    expose:
+      - "9000"
     volumes:
       - /data/langfuse/minio:/data
     healthcheck:
@@ -98,10 +96,7 @@ services:
       - -c
       - |
         mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minio} ${MINIO_ROOT_PASSWORD:-minio12345} &&
-        mc mb --ignore-existing local/${LANGFUSE_S3_BUCKET:-langfuse} &&
-        (mc anonymous set download local/${LANGFUSE_S3_BUCKET:-langfuse} || true) &&
-        printf '%s\n' '{"CORSRules":[{"AllowedOrigins":["*"],"AllowedMethods":["GET","PUT","HEAD","POST"],"AllowedHeaders":["*"],"ExposeHeaders":["ETag","x-amz-checksum-sha256","x-amz-request-id"],"MaxAgeSeconds":3600}]}' > /tmp/cors.json &&
-        (mc cors set local/${LANGFUSE_S3_BUCKET:-langfuse} /tmp/cors.json || true)
+        mc mb --ignore-existing local/${LANGFUSE_S3_BUCKET:-langfuse}
     restart: "no"
 
   # Langfuse 3 splits ingestion: web pushes events to S3 + Redis queue, worker
@@ -170,17 +165,17 @@ services:
       LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-}
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-}
 
-  # Stock nginx:alpine. Does not change the Langfuse image; only hides the
-  # baked CSP and re-adds it with ${LANGFUSE_S3_MEDIA_UPLOAD_PUBLIC_ENDPOINT}
-  # on media-src / img-src / connect-src.
+  # Stock nginx:alpine in front of Web. Proxies the UI on / and the MinIO S3
+  # API same-origin under /<bucket>/, so presigned media URLs are same-origin
+  # with the UI and the image's baked `media-src 'self'` already permits them.
+  # No CSP is rewritten here.
   langfuse-edge:
     image: nginx:alpine
     restart: unless-stopped
     depends_on:
       - langfuse-web
+      - minio
     ports:
       - "${LANGFUSE_PORT:-3100}:80"
-    environment:
-      MEDIA_CSP_ORIGIN: ${LANGFUSE_S3_MEDIA_UPLOAD_PUBLIC_ENDPOINT:?set LANGFUSE_S3_MEDIA_UPLOAD_PUBLIC_ENDPOINT in .env}
     volumes:
-      - ./nginx-csp.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./nginx-edge.conf.template:/etc/nginx/templates/default.conf.template:ro
