@@ -1,22 +1,27 @@
 # Self-hosted Langfuse 3.x for local demo / verification.
 #
-# Brings up the OTLP HTTP endpoint at http://localhost:${LANGFUSE_PORT:-3100}/api/public/otel/v1/traces
+# Brings up the OTLP HTTP endpoint at
+# http://localhost:${LANGFUSE_PORT:-3100}/api/public/otel/v1/traces
 # Accepts gen_ai.* spans natively (rendered as GENERATION observations).
 #
-# Usage:
-#   cp .env.example .env  # then edit secrets
-#   docker compose up -d
+# Usage (run via deploy/up.sh, or manually from this directory):
+#   ./up.sh up                 # one-shot: ensure .env, generate secrets, up -d
+#   docker compose up -d      # manual
 #   open http://localhost:${LANGFUSE_PORT:-3100}  -> sign up / use bootstrapped project keys
 #
-# Ports exposed externally:
-# - ${LANGFUSE_PORT} (default 3100) for Langfuse Web / API and the MinIO S3
-#   API (proxied same-origin under /${LANGFUSE_S3_BUCKET}/ by langfuse-edge so
-#   presigned media URLs match the UI origin and the baked CSP's 'self').
-# postgres / clickhouse / redis / minio stay on the docker network.
-# Persistent data is bind-mounted to /data/langfuse/{postgres,clickhouse,redis,minio}.
+# Layout:
+# - ${LANGFUSE_PORT} (default 3100) is the only host port exposed; nginx-edge
+#   fronts the Web UI and proxies the MinIO S3 API same-origin under
+#   /${LANGFUSE_S3_BUCKET}/ so presigned media URLs match the UI origin and
+#   the baked CSP's 'media-src self' already permits them.
+# - postgres / clickhouse / redis / minio stay on the docker network.
+# - Persistent data is bind-mounted to /data/langfuse/{postgres,clickhouse,redis,minio}.
 #
 # Env var names mirror the official langfuse/docker-compose.yml so the S3/Redis
-# ingestion queue initializes correctly against MinIO.
+# ingestion queue initializes correctly against MinIO. Secrets are marked
+# # CHANGEME — generate SALT / ENCRYPTION_KEY via `openssl rand -hex 32`.
+
+name: langfuse
 
 services:
   postgres:
@@ -24,9 +29,11 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-langfuse}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-langfuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-langfuse} # CHANGEME
       POSTGRES_DB: ${POSTGRES_DB:-langfuse}
       POSTGRES_HOST_AUTH_METHOD: trust
+      TZ: UTC
+      PGTZ: UTC
     volumes:
       - /data/langfuse/postgres:/var/lib/postgresql/data
     healthcheck:
@@ -34,16 +41,20 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 1s
 
   clickhouse:
     image: clickhouse/clickhouse-server:25.12
     restart: unless-stopped
     environment:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse} # CHANGEME
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     volumes:
       - /data/langfuse/clickhouse:/var/lib/clickhouse
+      # Caps ClickHouse self-observability logs that otherwise grow unbounded
+      # (trace_log alone wrote 12.5 GB in ~5 days on an idle box).
+      - ./clickhouse-logs.xml:/etc/clickhouse-server/config.d/z-logs.xml:ro
     ulimits:
       nofile:
         soft: 262144
@@ -53,25 +64,34 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 1s
 
   redis:
     image: redis:7
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--requirepass", "myredissecret"]
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_AUTH:-myredissecret} # CHANGEME
+      - --maxmemory-policy
+      - noeviction
     volumes:
       - /data/langfuse/redis:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "myredissecret", "ping"]
-      interval: 5s
-      timeout: 5s
+      test: ["CMD", "redis-cli", "-a", "${REDIS_AUTH:-myredissecret}", "ping"]
+      interval: 3s
+      timeout: 10s
       retries: 10
+      start_period: 1s
 
   minio:
     image: minio/minio:latest
     restart: unless-stopped
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio12345}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio12345} # CHANGEME
     command: ["server", "/data", "--console-address", ":9001"]
     expose:
       - "9000"
@@ -82,6 +102,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 1s
 
   # One-shot: ensure the langfuse bucket exists. Langfuse refuses to persist
   # OTLP spans when MinIO returns NoSuchBucket, and MinIO does not auto-create
@@ -103,7 +124,7 @@ services:
   # drains the queue into ClickHouse. Without the worker, spans land in S3 but
   # the UI shows zero traces. The env anchor keeps web/worker in sync.
   langfuse-worker:
-    image: langfuse/langfuse-worker:latest
+    image: ${LANGFUSE_WORKER_IMAGE:-langfuse/langfuse-worker:latest}
     restart: unless-stopped
     depends_on: &langfuse-depends-on
       postgres:
@@ -115,46 +136,70 @@ services:
       minio:
         condition: service_healthy
     environment: &langfuse-env
-      DATABASE_URL: postgresql://${POSTGRES_USER:-langfuse}:${POSTGRES_PASSWORD:-langfuse}@postgres:5432/${POSTGRES_DB:-langfuse}
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3100}
-      SALT: ${SALT:?set SALT in .env}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env}
-      CLICKHOUSE_URL: http://clickhouse:8123
-      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
-      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-langfuse}:${POSTGRES_PASSWORD:-langfuse}@postgres:5432/${POSTGRES_DB:-langfuse}
+      SALT: ${SALT:?set SALT in .env} # CHANGEME: openssl rand -hex 32
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env} # CHANGEME: openssl rand -hex 32
+      TELEMETRY_ENABLED: ${TELEMETRY_ENABLED:-true}
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: ${LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES:-false}
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
+      CLICKHOUSE_MIGRATION_URL: ${CLICKHOUSE_MIGRATION_URL:-clickhouse://clickhouse:9000}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
-      REDIS_URL: redis://:myredissecret@redis:6379
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_AUTH: myredissecret
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse} # CHANGEME
+      CLICKHOUSE_CLUSTER_ENABLED: ${CLICKHOUSE_CLUSTER_ENABLED:-false}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_AUTH: ${REDIS_AUTH:-myredissecret} # CHANGEME
       LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${LANGFUSE_S3_BUCKET:-langfuse}
-      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
-      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
-      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: ${LANGFUSE_S3_EVENT_UPLOAD_REGION:-auto}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: ${LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT:-http://minio:9000}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: ${LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE:-true}
       LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio}
-      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minio12345}
-      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minio12345} # CHANGEME
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: ${LANGFUSE_S3_EVENT_UPLOAD_PREFIX:-events/}
       LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: ${LANGFUSE_S3_BUCKET:-langfuse}
-      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
-      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
-      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: ${LANGFUSE_S3_MEDIA_UPLOAD_REGION:-auto}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: ${LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT:-http://minio:9000}
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: ${LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE:-true}
       LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio}
-      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minio12345}
-      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minio12345} # CHANGEME
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: ${LANGFUSE_S3_MEDIA_UPLOAD_PREFIX:-media/}
+      # Shared AI features configuration. These apply to AI features that run
+      # in both web and worker.
+      LANGFUSE_IN_APP_AGENT_ENABLED: ${LANGFUSE_IN_APP_AGENT_ENABLED:-}
+      LANGFUSE_AWS_BEDROCK_MODEL: ${LANGFUSE_AWS_BEDROCK_MODEL:-}
+      LANGFUSE_AWS_BEDROCK_SMALL_MODEL: ${LANGFUSE_AWS_BEDROCK_SMALL_MODEL:-}
+      LANGFUSE_AWS_BEDROCK_REGION: ${LANGFUSE_AWS_BEDROCK_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_PROFILE: ${AWS_PROFILE:-}
+      # In-app agent worker settings (ignored by the web service).
+      # Compose defaults the queue consumer on; the worker schema defaults it
+      # off so ingestion-only processes do not consume agent jobs.
+      QUEUE_CONSUMER_IN_APP_AGENT_RUN_QUEUE_IS_ENABLED: ${QUEUE_CONSUMER_IN_APP_AGENT_RUN_QUEUE_IS_ENABLED:-true}
+      LANGFUSE_IN_APP_AGENT_RUN_QUEUE_PROCESSING_CONCURRENCY: ${LANGFUSE_IN_APP_AGENT_RUN_QUEUE_PROCESSING_CONCURRENCY:-}
+      LANGFUSE_IN_APP_AGENT_AWS_PROFILE: ${LANGFUSE_IN_APP_AGENT_AWS_PROFILE:-}
+      LANGFUSE_IN_APP_AGENT_SANDBOX_PROVIDER: ${LANGFUSE_IN_APP_AGENT_SANDBOX_PROVIDER:-}
+      LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_IMAGE_IDENTIFIER: ${LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_IMAGE_IDENTIFIER:-}
+      LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN: ${LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN:-}
+      LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_EGRESS_NETWORK_CONNECTOR_ARN: ${LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_EGRESS_NETWORK_CONNECTOR_ARN:-}
+      LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_REGION: ${LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_REGION:-}
 
   langfuse-web:
-    image: modelbest-registry.cn-beijing.cr.aliyuncs.com/public/guide-robot/langfuse-web:lt-dev-20260817.140111
+    # Custom build of langfuse-web from the aliyun registry. Override by setting
+    # LANGFUSE_WEB_IMAGE in .env (e.g. to docker.io/langfuse/langfuse:4).
+    image: ${LANGFUSE_WEB_IMAGE:-modelbest-registry.cn-beijing.cr.aliyuncs.com/public/guide-robot/langfuse-web:lt-dev-20260817.140111}
     restart: unless-stopped
     depends_on: *langfuse-depends-on
     expose:
       - "3000"
     environment:
       <<: *langfuse-env
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set NEXTAUTH_SECRET in .env} # CHANGEME
       # Presigned media URLs are returned to robots/browsers, so Web must sign
       # against a host they can reach. Worker keeps the internal minio:9000.
       LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: ${LANGFUSE_S3_MEDIA_UPLOAD_PUBLIC_ENDPOINT:?set LANGFUSE_S3_MEDIA_UPLOAD_PUBLIC_ENDPOINT in .env}
-      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set NEXTAUTH_SECRET in .env}
       LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-}
       LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-}
       LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-}
@@ -164,6 +209,10 @@ services:
       LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-}
       LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-}
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-}
+      LANGFUSE_MARKDOWN_RENDER_CHARACTER_LIMIT: ${LANGFUSE_MARKDOWN_RENDER_CHARACTER_LIMIT:-}
+      # In-app agent settings.
+      LANGFUSE_IN_APP_AGENT_MAX_ACTIVE_RUNS_PER_USER: ${LANGFUSE_IN_APP_AGENT_MAX_ACTIVE_RUNS_PER_USER:-}
+      LANGFUSE_IN_APP_AGENT_MAX_ACTIVE_RUNS_PER_ORG: ${LANGFUSE_IN_APP_AGENT_MAX_ACTIVE_RUNS_PER_ORG:-}
 
   # Stock nginx:alpine in front of Web. Proxies the UI on / and the MinIO S3
   # API same-origin under /<bucket>/, so presigned media URLs are same-origin
