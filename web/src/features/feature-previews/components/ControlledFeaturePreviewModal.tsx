@@ -20,7 +20,7 @@ type ControlledFeaturePreviewModalProps = {
 const PREVIEW_LABEL: Record<PreviewFlag, string> = {
   modernSession: "Compact Session View",
   searchBar: "Filter Search Bar",
-  v4UpgradeUi: "V4 Migration",
+  compactTimeline: "Compact Timeline",
 };
 
 export function ControlledFeaturePreviewModal({
@@ -69,9 +69,17 @@ export function ControlledFeaturePreviewModal({
       onToggle: onToggle("modernSession"),
       isToggling: setFeaturePreviewEnabled.isPending,
     },
-    v4UpgradeUi: {
-      enabled: authSession.data?.user?.featureFlags.v4UpgradeUi === true,
-      onToggle: onToggle("v4UpgradeUi"),
+    compactTimeline: {
+      enabled:
+        authSession.data?.user?.featureFlags.compactTimeline === true ||
+        authSession.data?.environment.enableExperimentalFeatures === true,
+      disabled:
+        authSession.data?.environment.enableExperimentalFeatures === true,
+      warningReason:
+        authSession.data?.environment.enableExperimentalFeatures === true
+          ? "This preview is enabled by LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES, so a per-user opt-out does not disable it."
+          : undefined,
+      onToggle: onToggle("compactTimeline"),
       isToggling: setFeaturePreviewEnabled.isPending,
     },
     // The "Filter Search Bar" preview is retired — the bar is now generally

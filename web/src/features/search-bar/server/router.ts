@@ -45,6 +45,8 @@ import {
   recordParseOutcomeScores,
 } from "./parseOutcomeScoring";
 import { getProductBaseUrl } from "@/src/utils/base-url";
+import { RULE_FIELD_REGISTRY } from "@/src/features/evals/v2/constants/ruleSearchRegistry";
+import { EVENTS_FIELD_REGISTRY } from "../lib/fields";
 
 // Caps shared with `observedScoreNamesFromOptions` (the client-side builder),
 // which sends a set as undefined instead of ever exceeding them.
@@ -55,6 +57,7 @@ const scoreNameList = z
 const GenerateFilterInput = z.object({
   projectId: z.string(),
   prompt: z.string().min(1).max(2048),
+  registryId: z.enum(["events", "evaluationRules"]).default("events"),
   /** Existing bar query text, so the model refines the current filters. */
   currentQuery: z.string().max(4096).optional(),
   /** Project data context (observed values, metadata keys, result count) built
@@ -80,6 +83,10 @@ export const searchBarRouter = createTRPCRouter({
     .input(GenerateFilterInput)
     .mutation(async ({ input, ctx }) => {
       try {
+        const registry =
+          input.registryId === "evaluationRules"
+            ? RULE_FIELD_REGISTRY
+            : EVENTS_FIELD_REGISTRY;
         // Generating a filter reads nothing a project member cannot already
         // read by hand, so membership is the right bar; whether the org uses
         // AI at all is governed by `aiFeaturesEnabled` below.
@@ -88,14 +95,6 @@ export const searchBarRouter = createTRPCRouter({
           projectId: input.projectId,
           scope: "project:read",
         });
-
-        if (!env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION) {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message:
-              "AI filter generation is not available in self-hosted deployments.",
-          });
-        }
 
         const project = await ctx.prisma.project.findUnique({
           where: { id: input.projectId },
@@ -137,14 +136,12 @@ export const searchBarRouter = createTRPCRouter({
         const dayOfWeek = now.toLocaleDateString("en-US", { weekday: "long" });
         const currentDatetime = `${dayOfWeek}, ${now.toISOString()}`;
 
-        const aiTelemetryEnabled = project.organization.aiTelemetryEnabled;
-
-        if (aiTelemetryEnabled && !isLangfuseAITracingConfigured()) {
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "Langfuse AI Features not configured.",
-          });
-        }
+        // Tracing is optional: skip it when the AI-features project is not
+        // configured (the default self-hosted case) rather than failing the
+        // generation. Self-hosted cannot toggle `aiTelemetryEnabled` off.
+        const aiTelemetryEnabled =
+          project.organization.aiTelemetryEnabled &&
+          isLangfuseAITracingConfigured();
 
         // Pre-generated (rather than left to `getLangfuseAITraceSinkParams`'s
         // own default) so this handler OWNS the id: the parse-outcome scores
@@ -171,6 +168,7 @@ export const searchBarRouter = createTRPCRouter({
             aiFeaturesPublicKey: env.LANGFUSE_AI_FEATURES_PUBLIC_KEY,
             aiFeaturesSecretKey: env.LANGFUSE_AI_FEATURES_SECRET_KEY,
             aiFeaturesHost: env.LANGFUSE_AI_FEATURES_HOST,
+            registry,
           });
 
         // The current query being refined and the observed project data are
@@ -252,7 +250,7 @@ export const searchBarRouter = createTRPCRouter({
         // dropped and reported) so a misspelled score name can never apply as a
         // dead filter that silently matches nothing.
         const { filters, queryText, droppedCount, unknownScoreNames } =
-          parseGeneratedFilters(llmCompletion, input.scoreNames);
+          parseGeneratedFilters(llmCompletion, input.scoreNames, registry);
 
         if (droppedCount > 0) {
           logger.warn(

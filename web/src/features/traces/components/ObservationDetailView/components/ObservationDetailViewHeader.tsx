@@ -14,6 +14,7 @@ import {
   type ObservationType,
   AnnotationQueueObjectType,
   isGenerationLike,
+  type ScoreDomain,
 } from "@langfuse/shared";
 import { type SelectionData } from "@/src/features/comments/contexts/InlineCommentSelectionContext";
 import { type ObservationReturnTypeWithMetadata } from "@/src/server/api/routers/traces";
@@ -42,7 +43,6 @@ import {
   type WithStringifiedMetadata,
   type MetadataDomainClient,
 } from "@/src/utils/clientSideDomainTypes";
-import { type ScoreDomain } from "@langfuse/shared";
 import { type AggregatedTraceMetrics } from "@/src/features/traces/fns/traceAggregation";
 import type Decimal from "decimal.js";
 import { DetailHeaderActionsMenu } from "@/src/features/traces/components/DetailHeaderActionsMenu";
@@ -375,12 +375,8 @@ export const ObservationDetailViewHeader = memo(
 
         <div className="flex flex-col gap-2">
           {/* Timestamp */}
-          <div className="flex flex-wrap items-center gap-1">
-            <LocalIsoDate
-              date={observation.startTime}
-              accuracy="millisecond"
-              className="text-sm"
-            />
+          <div className="flex flex-wrap items-center gap-1 text-sm">
+            <LocalIsoDate date={observation.startTime} accuracy="millisecond" />
           </div>
 
           {/* Other badges */}
@@ -409,6 +405,24 @@ export const ObservationDetailViewHeader = memo(
                 }
                 costDetails={
                   subtreeMetrics?.costDetails ?? observation.costDetails
+                }
+                priceSource={
+                  isGenerationLike(observation.type) &&
+                  observation.internalModelId &&
+                  observation.model &&
+                  observation.usagePricingTierId &&
+                  observation.usagePricingTierName &&
+                  Object.keys(observation.providedCostDetails).length === 0 &&
+                  (!subtreeMetrics ||
+                    treeNodeTotalCost?.eq(totalCost ?? 0) === true)
+                    ? {
+                        projectId,
+                        modelId: observation.internalModelId,
+                        modelName: observation.model,
+                        pricingTierId: observation.usagePricingTierId,
+                        pricingTierName: observation.usagePricingTierName,
+                      }
+                    : undefined
                 }
               />
               {subtreeMetrics ? (

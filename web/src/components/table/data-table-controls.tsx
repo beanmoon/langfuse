@@ -1,6 +1,6 @@
 /* eslint-disable @repo/no-style-props */
-import type React from "react";
 import {
+  type default as React,
   createContext,
   useContext,
   useState,
@@ -49,6 +49,10 @@ import {
   Plus,
   UnfoldVertical,
   X,
+  X as IconX,
+  Search,
+  WandSparkles,
+  InfoIcon,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -77,7 +81,6 @@ import { Slider } from "@/src/components/ui/slider";
 import { Input } from "@/src/components/ui/input";
 import { Label } from "@/src/components/ui/label";
 import { Skeleton } from "@/src/components/ui/skeleton";
-import { X as IconX, Search, WandSparkles, InfoIcon } from "lucide-react";
 import DocPopup from "@/src/components/layouts/doc-popup";
 import type {
   UIFilter,
@@ -95,8 +98,8 @@ import {
   PopoverTrigger,
 } from "@/src/components/ui/popover";
 import { DataTableAIFilters } from "@/src/components/table/data-table-ai-filters";
-import { type FilterState } from "@langfuse/shared";
 import { useLangfuseCloudRegion } from "@/src/features/organizations/hooks";
+import { type FilterState } from "@langfuse/shared";
 
 interface ControlsContextType {
   open: boolean;
@@ -209,8 +212,8 @@ export function DataTableControls({
   blockedColumnReason,
   layout = "panel",
 }: DataTableControlsProps) {
-  const { isLangfuseCloud } = useLangfuseCloudRegion();
   const { setOpen, tableName, isMobile } = useDataTableControls();
+  const { isLangfuseCloud } = useLangfuseCloudRegion();
   const capture = usePostHogClientCapture();
   const [aiPopoverOpen, setAiPopoverOpen] = useState(false);
   const activeFilterCount = queryFilter.filters.filter(
