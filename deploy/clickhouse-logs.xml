@@ -1,0 +1,29 @@
+<clickhouse>
+    <!-- Disable the noisiest self-observability logs entirely.
+         These accumulate hundreds of MB to GB per day on an idle dev box
+         and are only useful for debugging ClickHouse server itself.
+         On a 3.6 GB RAM dev host, trace_log alone filled 12.5 GB in ~5 days. -->
+    <trace_log remove="remove" />
+    <text_log remove="remove" />
+    <asynchronous_metric_log remove="remove" />
+    <processors_profile_log remove="remove" />
+    <opentelemetry_span_log remove="remove" />
+    <query_views_log remove="remove" />
+    <query_metric_log remove="remove" />
+    <background_schedule_pool_log remove="remove" />
+
+    <!-- Keep useful logs but cap retention to 1 day (7 days for errors).
+         event_date is the partition column on all ClickHouse system log tables. -->
+    <metric_log>
+        <ttl>event_date + INTERVAL 1 DAY DELETE</ttl>
+    </metric_log>
+    <part_log>
+        <ttl>event_date + INTERVAL 1 DAY DELETE</ttl>
+    </part_log>
+    <query_log>
+        <ttl>event_date + INTERVAL 1 DAY DELETE</ttl>
+    </query_log>
+    <error_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </error_log>
+</clickhouse>
